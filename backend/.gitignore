@@ -1,0 +1,23 @@
+# Ignore temporary and cache files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+
+# Ignore environment variables and credentials
+.env
+.env.*
+credentials.json
+token.json
+secret.key
+
+# Ignore database files
+*.db
+*.sqlite3
+
+# Ignore data directory
+data/
