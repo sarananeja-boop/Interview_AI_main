@@ -152,8 +152,10 @@ export default function HistoryPage() {
             <span className="material-symbols-outlined filled" style={{ fontSize: 20 }}>space_dashboard</span>
             Dashboard
           </Link>
-          
-
+          <Link className="nav-item" href="/dashboard/news">
+            <span className="material-symbols-outlined filled" style={{ fontSize: 20 }}>article</span>
+            Daily News
+          </Link>
           <Link className="nav-item" href="/interview/setup">
             <span className="material-symbols-outlined" style={{ fontSize: 20 }}>psychology</span>
             New Interview

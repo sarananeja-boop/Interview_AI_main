@@ -61,6 +61,7 @@ function LiveContent() {
   const speakAbortControllerRef = useRef<AbortController | null>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const browserRecognitionRef = useRef<any>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const processorRef = useRef<AudioWorkletNode | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -400,8 +401,74 @@ function LiveContent() {
     };
   }, [processVideoFrames]);
 
+  const startBrowserSTT = useCallback(() => {
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      setSttError("Voice streaming unavailable. Please type your answer.");
+      return;
+    }
+
+    try {
+      if (browserRecognitionRef.current) {
+        try { browserRecognitionRef.current.stop(); } catch {}
+      }
+      const recognition = new SpeechRecognition();
+      browserRecognitionRef.current = recognition;
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.lang = 'en-IN';
+
+      recognition.onstart = () => {
+        setSttConnected(true);
+        setIsListening(true);
+        setSttError(null);
+      };
+
+      recognition.onresult = (event: any) => {
+        let interimText = '';
+        for (let i = event.resultIndex; i < event.results.length; ++i) {
+          if (event.results[i].isFinal) {
+            const finalWords = event.results[i][0].transcript;
+            setInput((prev) => {
+              const newText = prev + (prev && !prev.endsWith(" ") ? " " : "") + finalWords;
+              transcriptRef.current = newText;
+              return newText;
+            });
+            setTranscript("");
+          } else {
+            interimText += event.results[i][0].transcript;
+          }
+        }
+        if (interimText) {
+          setTranscript(interimText);
+        }
+      };
+
+      recognition.onerror = (e: any) => {
+        console.warn("Browser STT error:", e.error);
+        if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+          setSttError("Microphone permission denied. Please enable microphone or type your answer.");
+        }
+      };
+
+      recognition.onend = () => {
+        if (!intentionalCloseRef.current && !isCompleteRef.current && browserRecognitionRef.current === recognition) {
+          try { recognition.start(); } catch {}
+        } else {
+          setSttConnected(false);
+          setIsListening(false);
+        }
+      };
+
+      recognition.start();
+    } catch (err) {
+      console.error("Failed to start browser STT:", err);
+      setSttError("Voice recognition unavailable. Please type your answer.");
+    }
+  }, []);
+
   const startSTT = useCallback(async () => {
-    if (wsRef.current) return; // Already connected
+    if (wsRef.current || browserRecognitionRef.current) return; // Already connected
     
     intentionalCloseRef.current = false; // Reset intentional close flag
 
@@ -494,9 +561,9 @@ function LiveContent() {
             stutterRef.current = fillers + repeated;
           }
         } else if (data.type === "error") {
-          // Backend sent a structured error (STT connection issue)
-          setSttError(data.message || "Voice connection lost. Please type your answer.");
+          console.warn("Deepgram STT error:", data.message, "— switching to browser speech recognition fallback.");
           stopSTT();
+          setTimeout(() => startBrowserSTT(), 100);
         }
       };
 
@@ -504,14 +571,9 @@ function LiveContent() {
         setSttConnected(false);
         setIsListening(false);
 
-        // Auto-reconnect with exponential backoff
-        if (!intentionalCloseRef.current && sttReconnectAttempts.current < MAX_STT_RECONNECTS && !isCompleteRef.current) {
-          const delay = Math.pow(2, sttReconnectAttempts.current) * 1000;
-          sttReconnectAttempts.current += 1;
-          console.log(`STT disconnected. Reconnecting in ${delay / 1000}s (attempt ${sttReconnectAttempts.current}/${MAX_STT_RECONNECTS})`);
-          setTimeout(() => startSTT(), delay);
-        } else if (!intentionalCloseRef.current && sttReconnectAttempts.current >= MAX_STT_RECONNECTS) {
-          setSttError("Lost connection to transcription service. Please type your answer.");
+        if (!intentionalCloseRef.current && !isCompleteRef.current) {
+          console.warn("Deepgram WebSocket closed — switching to browser speech recognition fallback.");
+          startBrowserSTT();
         }
       };
 
@@ -542,6 +604,10 @@ function LiveContent() {
     if (wsRef.current) {
       wsRef.current.close();
       wsRef.current = null;
+    }
+    if (browserRecognitionRef.current) {
+      try { browserRecognitionRef.current.stop(); } catch {}
+      browserRecognitionRef.current = null;
     }
     // NOTE: Do NOT stop webcam or vision here — they run independently
     setIsListening(false);

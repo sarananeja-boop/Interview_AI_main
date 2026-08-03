@@ -317,3 +317,16 @@ export async function setActiveProfileId(profileId: string) {
     localStorage.setItem("active_profile_id", profileId);
   }
 }
+
+// ============ News ============
+
+export async function getDailyNews(categories: string[]) {
+  const query = categories.length > 0 ? `?categories=${encodeURIComponent(categories.join(","))}` : "";
+  const res = await apiFetch(`/api/news/${query}`);
+  if (!res.ok) {
+    const data = await res.json();
+    throw new Error(data.detail || "Failed to fetch news");
+  }
+  return res.json();
+}
+

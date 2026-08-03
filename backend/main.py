@@ -5,6 +5,7 @@ Starts the server, registers routes, configures CORS and lifespan events.
 """
 
 from contextlib import asynccontextmanager
+import asyncio
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,8 +15,10 @@ from slowapi.middleware import SlowAPIMiddleware
 
 from config import settings
 from db.database import init_db
-from api import auth, profile, interview, evaluation, stt_proxy, tts
+from api import auth, profile, interview, evaluation, stt_proxy, tts, news
 from core.rate_limit import limiter
+# NEWS LOOP DISABLED — was exhausting API rate limits needed for interviews
+# from core.current_affairs_engine import start_news_refresh_loop
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -25,6 +28,8 @@ async def lifespan(app: FastAPI):
     print(f"✓ LLM Provider: {settings.LLM_PROVIDER} ({settings.LLM_MODEL})")
     print(f"✓ Deepgram STT: {'configured' if settings.DEEPGRAM_API_KEY else 'NOT configured'}")
     print(f"✓ {settings.APP_NAME} is ready")
+    # News refresh loop disabled to preserve API rate limits for interviews
+    # news_task = asyncio.create_task(start_news_refresh_loop())
     yield
     # --- Shutdown ---
     print("Shutting down...")
@@ -77,6 +82,7 @@ app.include_router(interview.router, prefix="/api/interview", tags=["Interview"]
 app.include_router(evaluation.router, prefix="/api/evaluation", tags=["Evaluation"])
 app.include_router(stt_proxy.router, prefix="/api/stt", tags=["STT"])
 app.include_router(tts.router, prefix="/api/tts", tags=["TTS"])
+app.include_router(news.router, prefix="/api/news", tags=["News"])
 
 
 @app.get("/api/health")

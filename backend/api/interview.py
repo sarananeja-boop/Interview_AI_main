@@ -56,6 +56,7 @@ async def start_interview(
     )
     db.add(interview)
     await db.flush()
+    await db.commit()  # Release SQLite write lock BEFORE the long LLM call
 
     # Start the interview engine
     try:
@@ -85,12 +86,22 @@ async def start_interview(
         )
     except Exception as e:
         import logging
-        logging.error(f"Failed to start interview: {str(e)}")
+        error_msg = str(e)
+        logging.error(f"Failed to start interview: {error_msg}")
+        # Clean up the already-committed interview record on failure
+        try:
+            await db.execute(delete(Interview).where(Interview.id == interview.id))
+            await db.commit()
+        except Exception:
+            pass
+        # Give user a clear message for rate limits vs other errors
+        if "rate limit" in error_msg.lower() or "429" in error_msg:
+            raise HTTPException(status_code=429, detail="The AI service is temporarily busy. Please wait 30 seconds and try again.")
         raise HTTPException(status_code=500, detail="An internal error occurred while starting the interview.")
 
     # Persist session state to DB for crash recovery
     from core.memory_engine import persist_session
-    await persist_session(interview.id)
+    await persist_session(interview.id, db=db)
 
     return {
         "interview_id": interview.id,
@@ -147,7 +158,7 @@ async def respond_to_interviewer(
 
     # Persist session state to DB for crash recovery
     from core.memory_engine import persist_session
-    await persist_session(interview_id)
+    await persist_session(interview_id, db=db)
 
     # If interview is complete, update the record
     if response.get("is_complete"):
@@ -215,7 +226,7 @@ async def get_interview(
     # Try to restore from DB if session was lost (e.g., server restart)
     if not live_state and interview.status == "active":
         from core.memory_engine import restore_session
-        restored = await restore_session(interview_id)
+        restored = await restore_session(interview_id, db=db)
         if restored:
             live_state = interview_engine.get_interview_state(interview_id)
             if live_state:

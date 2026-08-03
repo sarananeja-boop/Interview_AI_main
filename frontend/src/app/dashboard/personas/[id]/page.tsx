@@ -1118,6 +1118,9 @@ export default function PersonaDetailsPage() {
           <Link className="nav-item" href="/dashboard">
             <span className="material-symbols-outlined filled" style={{ fontSize: 20 }}>space_dashboard</span>Dashboard
           </Link>
+          <Link className="nav-item" href="/dashboard/news">
+            <span className="material-symbols-outlined filled" style={{ fontSize: 20 }}>article</span>Daily News
+          </Link>
           <Link className="nav-item nav-item-active" href="/dashboard/personas">
             <span className="material-symbols-outlined" style={{ fontSize: 20 }}>folder_shared</span>Personas
           </Link>

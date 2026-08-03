@@ -230,7 +230,11 @@ async def stt_stream(ws: WebSocket):
     except Exception as e:
         logger.error(f"Deepgram proxy error: {e}")
         try:
-            await ws.send_json({"type": "error", "message": "STT connection failed"})
+            await ws.send_json({
+                "type": "error",
+                "code": "stt_fallback",
+                "message": "Deepgram streaming credits exhausted or restricted. Switching to browser speech recognition."
+            })
             await ws.close()
         except Exception:
             pass

@@ -22,6 +22,7 @@ import re
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional
+import html
 
 import feedparser
 import httpx
@@ -45,11 +46,15 @@ TMP_DIR.mkdir(parents=True, exist_ok=True)
 # ---------------------------------------------------------------------------
 
 RSS_FEEDS = {
-    "google_india": "https://news.google.com/rss/search?q=India+news&hl=en-IN&gl=IN&ceid=IN:en",
+    "google_business": "https://news.google.com/rss/headlines/section/topic/BUSINESS?hl=en-IN&gl=IN&ceid=IN:en",
+    "google_tech": "https://news.google.com/rss/headlines/section/topic/TECHNOLOGY?hl=en-IN&gl=IN&ceid=IN:en",
+    "google_sports": "https://news.google.com/rss/headlines/section/topic/SPORTS?hl=en-IN&gl=IN&ceid=IN:en",
+    "google_science": "https://news.google.com/rss/headlines/section/topic/SCIENCE?hl=en-IN&gl=IN&ceid=IN:en",
+    "google_health": "https://news.google.com/rss/headlines/section/topic/HEALTH?hl=en-IN&gl=IN&ceid=IN:en",
+    "google_india": "https://news.google.com/rss/headlines/section/topic/NATION?hl=en-IN&gl=IN&ceid=IN:en",
     "hindu_national": "https://www.thehindu.com/news/national/?service=rss",
     "indian_express": "https://indianexpress.com/section/india/feed/",
     "toi_top": "https://timesofindia.indiatimes.com/rssfeeds/-2128936835.cms",
-    "ht_india": "http://feeds.hindustantimes.com/HT-India",
 }
 
 # ---------------------------------------------------------------------------
@@ -59,8 +64,12 @@ RSS_FEEDS = {
 NEWS_CATEGORIES = {
     "economy": [
         "gdp", "inflation", "rbi", "repo rate", "budget", "fiscal", "tax",
-        "gst", "stock", "market", "trade", "export", "import", "growth",
+        "gst", "trade", "export", "import", "growth",
         "recession", "unemployment",
+    ],
+    "finance": [
+        "stock", "market", "sensex", "nifty", "equity", "shares",
+        "ipo", "sebi", "mutual fund", "trading", "investor", "dividend"
     ],
     "geopolitics": [
         "china", "pakistan", "russia", "ukraine", "gaza", "israel", "brics",
@@ -106,6 +115,11 @@ STATIC_HOT_TOPICS = [
     "Digital rupee (CBDC) pilot and banking implications",
     "India's defence modernization and indigenous manufacturing",
     "Gig economy regulation and worker rights",
+]
+
+IRRELEVANT_KEYWORDS = [
+    "murder", "rape", "stabbed", "suicide", "killed", "arrested", 
+    "robbery", "smuggling", "accident", "crime", "sexual", "assault"
 ]
 
 # ---------------------------------------------------------------------------
@@ -162,7 +176,7 @@ def _categorize_headline(title: str, summary: str = "") -> str:
     best_score = 0
 
     for category, keywords in NEWS_CATEGORIES.items():
-        score = sum(1 for kw in keywords if kw in text)
+        score = sum(1 for kw in keywords if re.search(r'\b' + re.escape(kw) + r'\b', text))
         if score > best_score:
             best_score = score
             best_category = category
@@ -198,9 +212,15 @@ async def fetch_and_cache_news() -> dict:
 
     for source_name, url in RSS_FEEDS.items():
         try:
-            # feedparser is sync; run in executor to avoid blocking the loop
+            # use httpx to fetch with a user-agent to avoid getting blocked
+            async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+                resp = await client.get(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"})
+                resp.raise_for_status()
+                feed_text = resp.text
+
+            # feedparser can parse strings
             loop = asyncio.get_running_loop()
-            feed = await loop.run_in_executor(None, feedparser.parse, url)
+            feed = await loop.run_in_executor(None, feedparser.parse, feed_text)
 
             if feed.bozo and not feed.entries:
                 logger.warning("Feed %s returned bozo with no entries", source_name)
@@ -213,14 +233,40 @@ async def fetch_and_cache_news() -> dict:
 
                 if not title:
                     continue
+                    
+                # Clean title (remove trailing publisher strings like " - The Hindu" or "| Times of India")
+                title = re.sub(r'\s*[-|]\s*(The Hindu|Times of India|Hindustan Times|Indian Express|Moneycontrol|Google News|NDTV|Mint).*$', '', title, flags=re.IGNORECASE).strip()
+                title = title.replace("&nbsp;", " ").replace("&amp;", "&").replace("&quot;", '"').replace("&#39;", "'")
+                title = re.sub(r'\s+', ' ', title)
+
+                # Skip irrelevant / crime news
+                text_to_check = f"{title} {summary}".lower()
+                if any(re.search(r'\b' + re.escape(bad) + r'\b', text_to_check) for bad in IRRELEVANT_KEYWORDS):
+                    continue
+
+                cat = _categorize_headline(title, summary)
+                
+                # Base scoring
+                base_score = 0
+                if cat in ("economy", "finance", "geopolitics", "technology"):
+                    base_score += 30
+                elif cat in ("social_policy", "environment"):
+                    base_score += 20
+                else:
+                    base_score += 10
+                    
+                if source_name in ("hindu_national", "indian_express", "google_business"):
+                    base_score += 15
 
                 headlines.append(
                     {
                         "title": title,
-                        "category": _categorize_headline(title, summary),
+                        "category": cat,
                         "source": source_name,
                         "date": published,
-                        "summary": summary[:300],  # truncate long summaries
+                        "url": entry.get("link", ""),
+                        "summary": html.unescape(re.sub(r'<[^>]+>', '', summary)).strip()[:300],  # remove html and truncate
+                        "base_score": base_score
                     }
                 )
 
@@ -242,6 +288,31 @@ async def fetch_and_cache_news() -> dict:
             unique_headlines.append(hl)
     headlines = unique_headlines
 
+    # Sort by base_score to prioritize top headlines for AI analysis
+    headlines.sort(key=lambda x: -x.get("base_score", 0))
+
+    from core.news_analysis_engine import generate_story_analysis, generate_daily_big_picture
+    
+    # Analyze the top 4 "Must Know" stories to reduce API overhead
+    top_4 = headlines[:4]
+    
+    # We gather the AI calls to run concurrently where possible, or sequentially to avoid rate limits
+    # OpenRouter handles concurrency fairly well, but let's do it sequentially to be safe with free tier
+    for hl in top_4:
+        analysis = await generate_story_analysis(hl["title"], hl["summary"], hl["category"])
+        if analysis:
+            hl["ai_analysis"] = analysis
+            hl["relevance_level"] = "High Relevance"
+            hl["base_score"] += 20  # Boost for having full analysis
+        else:
+            hl["relevance_level"] = "Medium Relevance"
+            
+    for hl in headlines[4:]:
+        hl["relevance_level"] = "Low Relevance" if hl.get("base_score", 0) < 25 else "Medium Relevance"
+
+    # Generate daily big picture synthesis
+    big_picture = await generate_daily_big_picture(top_4)
+
     # Build hot topics: most-represented categories × top headlines
     hot_topics = _extract_hot_topics(headlines)
 
@@ -249,6 +320,7 @@ async def fetch_and_cache_news() -> dict:
         "fetched_at": datetime.now(timezone.utc).isoformat(),
         "headlines": headlines,
         "hot_topics": hot_topics,
+        "big_picture": big_picture,
     }
 
     _news_cache = cache_data
@@ -356,9 +428,8 @@ def get_relevant_headlines(
     interest_lower = {i.lower() for i in interests}
     # Also map common interest names to category keys
     interest_to_cat = {
-        "finance": "economy",
         "economics": "economy",
-        "economy_finance": "economy",
+        "economy_finance": "finance",
         "technology_ai": "technology",
         "ai": "technology",
         "social_issues": "social_policy",
@@ -381,26 +452,29 @@ def get_relevant_headlines(
 
     state_lower = state.lower().strip()
 
+    # Apply strict filter if categories are selected
+    if target_cats:
+        headlines = [hl for hl in headlines if hl.get("category") in target_cats]
+
+    if not headlines:
+        return []
+
     def relevance_score(hl: dict) -> int:
-        score = 0
-        if hl["category"] in target_cats:
-            score += 10
+        score = hl.get("base_score", 0)
         if state_lower and state_lower in (hl["title"] + hl.get("summary", "")).lower():
-            score += 5
+            score += 15
         # Boost headlines whose text contains any interest keyword
         text = (hl["title"] + " " + hl.get("summary", "")).lower()
         for interest in interest_lower:
-            if interest in text:
-                score += 3
+            if re.search(r'\b' + re.escape(interest) + r'\b', text):
+                score += 10
         return score
 
     scored = [(relevance_score(hl), hl) for hl in headlines]
     scored.sort(key=lambda x: -x[0])
 
-    # Return top-n that have at least *some* relevance; fall back to top-n by position
-    relevant = [hl for score, hl in scored if score > 0]
-    if not relevant:
-        relevant = headlines
+    # Return all matched headlines, sorted by relevance
+    relevant = [hl for score, hl in scored]
 
     return relevant[:n]
 
@@ -645,6 +719,13 @@ async def start_news_refresh_loop() -> None:
     logger.info(
         "Starting news refresh loop (every %d hours)", CALIBRATION_HOURS
     )
+
+    # Load disk cache immediately so headlines are available without LLM calls
+    _ensure_cache_loaded()
+
+    # Delay the first LLM-heavy refresh to avoid exhausting the API rate limit
+    # on startup — the user's interview LLM calls take priority.
+    await asyncio.sleep(120)
 
     while True:
         try:

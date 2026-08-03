@@ -34,6 +34,14 @@ export default function DashboardPage() {
   const [dragActive, setDragActive] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
+  const PERSONA_DISPLAY_NAMES: Record<string, string> = {
+    iim_a: "IIM Ahmedabad",
+    iim_b: "IIM Bangalore",
+    iim_c: "IIM Calcutta",
+    iim_l: "IIM Lucknow",
+    iim_general: "General IIM",
+  };
+
   const loadProfiles = useCallback(async () => {
     try {
       const data = await listProfiles();
@@ -120,7 +128,10 @@ export default function DashboardPage() {
             <span className="material-symbols-outlined filled" style={{ fontSize: 20 }}>space_dashboard</span>
             Dashboard
           </Link>
-
+          <Link className="nav-item" href="/dashboard/news">
+            <span className="material-symbols-outlined filled" style={{ fontSize: 20 }}>article</span>
+            Daily News
+          </Link>
           <Link className="nav-item" href="/interview/setup">
             <span className="material-symbols-outlined" style={{ fontSize: 20 }}>psychology</span>
             New Interview
@@ -277,7 +288,11 @@ export default function DashboardPage() {
                       : "—"}
                   </div>
                   <div className="recent-info">
-                    <div className="recent-title">{interview.persona || "Mock Interview"}</div>
+                    <div className="recent-title">
+                      {PERSONA_DISPLAY_NAMES[interview.persona] 
+                        ? `${PERSONA_DISPLAY_NAMES[interview.persona]} Panel` 
+                        : (interview.persona ? `${interview.persona.charAt(0).toUpperCase() + interview.persona.slice(1)} Panel` : "Mock Interview")}
+                    </div>
                     <div className="recent-meta">
                       {new Date(interview.started_at).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
                       {" • "}

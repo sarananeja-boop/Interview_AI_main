@@ -59,9 +59,11 @@ class InterviewEngine:
             except Exception as e:
                 logger.warning(f"Failed to fetch hometown context: {e}")
         
-        # Ensure news cache is populated
+        # Load cached news context (no LLM calls — just disk/memory cache)
+        # The background news refresh loop handles the heavy LLM-based analysis.
         try:
-            await fetch_and_cache_news()
+            from core.current_affairs_engine import _ensure_cache_loaded
+            _ensure_cache_loaded()
             ca_headlines = get_relevant_headlines(interests, state, n=10)
             hot_topics = get_hot_topics(n=5)
             iim_questions = await get_iim_ca_questions(interests)
@@ -105,9 +107,10 @@ class InterviewEngine:
                 "The candidate has just joined the interview. "
                 "Begin the interview by welcoming them properly. Introduce yourself briefly and naturally as an IIM panelist, "
                 "set a professional tone, and then seamlessly transition into the first warmup question. "
-                "CRITICAL: Do NOT recite facts about your institution (like 'we are the oldest IIM') in your introduction. "
-                "For your first question, you can ask about their background/journey, but you MUST VARY the phrasing and tone completely so it never sounds scripted (e.g., 'I saw your CV, but who are you beyond that?', 'Take us through your choices'). "
-                "Alternatively, occasionally skip the standard intro entirely and hit them with a 'googly' or unexpected question right away to test their composure."
+                "CRITICAL LENGTH RULE: Keep your ENTIRE opening introduction and first question under 35 words total (max 2 to 3 short sentences)! Be crisp, direct, and conversational. Do NOT give a long speech. "
+                "CRITICAL: Do NOT recite facts about your institution in your introduction. "
+                "For your first question, ask about their background/journey, but VARY the phrasing completely so it never sounds scripted (e.g., 'I saw your CV, but who are you beyond that?'). "
+                "Alternatively, hit them with a quick unexpected question right away to test their composure."
             ),
             temperature=0.7,
         )

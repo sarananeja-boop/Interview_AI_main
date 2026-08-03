@@ -3,6 +3,7 @@ SQLite database setup via SQLAlchemy async engine.
 """
 
 import os
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 
 from config import settings
@@ -12,12 +13,20 @@ from db.base import Base
 _db_path = settings.DATABASE_URL.replace("sqlite+aiosqlite:///", "")
 os.makedirs(os.path.dirname(_db_path), exist_ok=True)
 
-# Async engine for SQLite
+# Async engine for SQLite with 30s busy timeout
 engine = create_async_engine(
     settings.DATABASE_URL,
     echo=settings.DEBUG,
-    connect_args={"check_same_thread": False},
+    connect_args={"check_same_thread": False, "timeout": 30.0},
 )
+
+@event.listens_for(engine.sync_engine, "connect")
+def set_sqlite_pragma(dbapi_connection, connection_record):
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA journal_mode=WAL")
+    cursor.execute("PRAGMA busy_timeout=30000")
+    cursor.execute("PRAGMA synchronous=NORMAL")
+    cursor.close()
 
 # Session factory
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)

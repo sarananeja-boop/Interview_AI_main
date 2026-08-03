@@ -19,6 +19,8 @@ class Settings(BaseSettings):
     LLM_MODEL: str = "openrouter/free"
     OPENROUTER_API_KEY: str = ""
     OPENROUTER_API_KEY_2: str = ""
+    GROQ_API_KEY: str = ""
+    GROQ_MODEL: str = "llama-3.3-70b-versatile"
 
     # --- Deepgram STT (server-side only) ---
     DEEPGRAM_API_KEY: str = ""

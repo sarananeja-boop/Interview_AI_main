@@ -134,12 +134,14 @@ function SetupContent() {
         {/* Navigation */}
         <div className="sidebar-nav">
           <div className="sidebar-nav-label">Menu</div>
-          <Link className="nav-item nav-item-active" href="/dashboard">
+          <Link className="nav-item" href="/dashboard">
             <span className="material-symbols-outlined filled" style={{ fontSize: 20 }}>space_dashboard</span>
             Dashboard
           </Link>
-          
-
+          <Link className="nav-item" href="/dashboard/news">
+            <span className="material-symbols-outlined filled" style={{ fontSize: 20 }}>article</span>
+            Daily News
+          </Link>
           <Link className="nav-item nav-item-active" href="/interview/setup">
             <span className="material-symbols-outlined" style={{ fontSize: 20 }}>psychology</span>
             New Interview

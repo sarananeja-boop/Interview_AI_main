@@ -1,14 +1,13 @@
 """
-LLM Provider Abstraction Layer.
+LLM Provider Abstraction Layer with Automatic Backup.
 
 Uses OpenRouter API (OpenAI-compatible) with auto-routing to the best
-available free model via the 'openrouter/free' model identifier.
-No credit card needed.
-
-Switch models via .env:
-  LLM_MODEL=openrouter/free  → Auto-route to best free model (default)
+available free model via 'openrouter/free'.
+If OpenRouter fails or is rate-limited (429), immediately switches to Groq API
+as a ultra-fast backup.
 """
 
+import asyncio
 import json
 import logging
 from typing import Type
@@ -17,17 +16,17 @@ import httpx
 from pydantic import BaseModel
 
 from config import settings
-from core.circuit_breaker import llm_circuit, CircuitOpenError
 
 logger = logging.getLogger(__name__)
 
-# Retry config for rate limits
-MAX_RETRIES = 4
-RETRY_DELAY = 5  # fallback delay if API doesn't tell us how long to wait
+
+class RateLimitError(Exception):
+    """Raised when all AI providers (primary and backup) are rate limited."""
+    pass
 
 
 class LLMProvider:
-    """Unified LLM interface using OpenRouter API."""
+    """Unified LLM interface using OpenRouter API with Groq API backup."""
 
     def __init__(self):
         self.provider = settings.LLM_PROVIDER
@@ -37,9 +36,13 @@ class LLMProvider:
         self.base_url = "https://openrouter.ai/api/v1"
 
         if not self.api_keys:
-            raise ValueError("OPENROUTER_API_KEY is required. Get one free at https://openrouter.ai")
+            raise ValueError("OPENROUTER_API_KEY is required.")
 
         self.api_key = self.api_keys[self.current_key_idx]
+
+        # Groq backup configuration
+        self.groq_api_key = getattr(settings, 'GROQ_API_KEY', '')
+        self.groq_model = getattr(settings, 'GROQ_MODEL', '') or "llama-3.3-70b-versatile"
 
         self.headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -48,28 +51,85 @@ class LLMProvider:
             "X-Title": "IIM Interview Simulator",
         }
 
-        logger.info(f"LLM Provider initialized: OpenRouter ({self.model}) with {len(self.api_keys)} keys")
+        logger.info(
+            f"LLM Provider initialized: OpenRouter ({self.model}) with {len(self.api_keys)} keys | "
+            f"Backup: Groq ({self.groq_model})"
+        )
 
     def _rotate_key(self):
         self.current_key_idx = (self.current_key_idx + 1) % len(self.api_keys)
         self.api_key = self.api_keys[self.current_key_idx]
         self.headers["Authorization"] = f"Bearer {self.api_key}"
-        logger.info(f"Rotated to API key {self.current_key_idx + 1}/{len(self.api_keys)}")
-
 
     def _mask_key(self, text: str) -> str:
-        """Redact the API key from any strings for secure logging."""
-        if not text or not isinstance(text, str) or not self.api_key:
+        """Redact API keys from any strings for secure logging."""
+        if not text or not isinstance(text, str):
             return str(text)
-        return text.replace(self.api_key, "[API_KEY_REDACTED]")
+        if self.api_key:
+            text = text.replace(self.api_key, "[OPENROUTER_KEY_REDACTED]")
+        for k in self.api_keys:
+            if k:
+                text = text.replace(k, "[OPENROUTER_KEY_REDACTED]")
+        if getattr(self, 'groq_api_key', None):
+            text = text.replace(self.groq_api_key, "[GROQ_KEY_REDACTED]")
+        return text
+
+    async def _make_groq_request(self, payload: dict) -> dict:
+        """Make backup API request to Groq when OpenRouter fails or is rate-limited."""
+        if not self.groq_api_key:
+            raise RateLimitError("AI service rate limited and no backup GROQ_API_KEY is configured.")
+
+        groq_payload = dict(payload)
+        groq_payload["model"] = self.groq_model
+
+        headers = {
+            "Authorization": f"Bearer {self.groq_api_key}",
+            "Content-Type": "application/json",
+        }
+        logger.info(f"⚡ Using backup Groq API ({self.groq_model})...")
+
+        for attempt in range(3):
+            try:
+                async with httpx.AsyncClient(timeout=45) as client:
+                    response = await client.post(
+                        "https://api.groq.com/openai/v1/chat/completions",
+                        headers=headers,
+                        json=groq_payload,
+                    )
+                if response.status_code == 200:
+                    logger.info("✓ Groq backup API request successful!")
+                    return response.json()
+                if response.status_code == 429 and attempt < 2:
+                    logger.warning(f"Groq backup hit rate limit, retrying in 2s... (attempt {attempt+1}/3)")
+                    await asyncio.sleep(2)
+                    continue
+                try:
+                    error_data = response.json()
+                    error_msg = error_data.get("error", {}).get("message", f"HTTP {response.status_code}")
+                except Exception:
+                    error_msg = f"HTTP {response.status_code}: {response.text}"
+                if attempt < 2:
+                    await asyncio.sleep(2)
+                    continue
+                raise Exception(self._mask_key(f"Groq API error: {error_msg}"))
+            except Exception as e:
+                if attempt < 2 and ("timeout" in str(e).lower() or "429" in str(e) or "connection" in str(e).lower()):
+                    await asyncio.sleep(2)
+                    continue
+                raise Exception(self._mask_key(f"Groq backup failed: {str(e)}"))
+
+        raise RateLimitError("AI services (both OpenRouter and Groq backup) are currently busy. Please try again in 15 seconds.")
 
     async def _make_request(self, payload: dict) -> dict:
-        """Make an API request with retry logic for rate limits."""
-        import asyncio
+        """Make an API request to OpenRouter, with immediate fallback to Groq on failure or rate limits.
         
-        for attempt in range(MAX_RETRIES):
+        This prevents indefinite loading by switching to Groq instantly if OpenRouter is rate-limited.
+        """
+        openrouter_attempts = min(len(self.api_keys), 2)
+
+        for attempt in range(openrouter_attempts):
             try:
-                async with httpx.AsyncClient(timeout=60) as client:
+                async with httpx.AsyncClient(timeout=30) as client:
                     response = await client.post(
                         f"{self.base_url}/chat/completions",
                         headers=self.headers,
@@ -80,39 +140,28 @@ class LLMProvider:
                     return response.json()
 
                 if response.status_code == 429:
-                    if len(self.api_keys) > 1:
-                        logger.warning(f"Rate limited (429). Rotating key... (attempt {attempt+1}/{MAX_RETRIES})")
+                    if attempt < openrouter_attempts - 1:
+                        logger.warning(f"OpenRouter key {attempt+1} rate limited (429). Rotating key...")
                         self._rotate_key()
+                        await asyncio.sleep(1)
                         continue
-                        
-                    # Rate limited — use the API's suggested wait time if available
-                    error_data = response.json()
-                    retry_after = (
-                        error_data.get("error", {})
-                        .get("metadata", {})
-                        .get("retry_after_seconds", RETRY_DELAY * (attempt + 1))
-                    )
-                    wait = min(retry_after + 1, 30)  # cap at 30s
-                    logger.warning(f"Rate limited (429). Waiting {wait:.0f}s... (attempt {attempt+1}/{MAX_RETRIES})")
-                    await asyncio.sleep(wait)
-                    continue
+                    logger.warning("OpenRouter rate limited on all keys. Immediately switching to Groq backup API...")
+                    return await self._make_groq_request(payload)
 
-                # Other errors
-                error_data = response.json()
-                error_msg = error_data.get("error", {}).get("message", f"HTTP {response.status_code}")
-                raise Exception(self._mask_key(f"OpenRouter API error: {error_msg}"))
+                # Other HTTP errors
+                logger.warning(f"OpenRouter returned HTTP {response.status_code}. Switching to Groq backup API...")
+                return await self._make_groq_request(payload)
 
-            except httpx.TimeoutException:
-                if attempt < MAX_RETRIES - 1:
-                    logger.warning(f"Request timed out. Retrying... (attempt {attempt+1})")
-                    await asyncio.sleep(RETRY_DELAY)
-                    continue
-                raise Exception("Request timed out after retries")
             except Exception as e:
-                # Catch any other exception (like httpx.RequestError) and mask it just in case
-                raise Exception(self._mask_key(f"Request failed: {str(e)}"))
+                if attempt < openrouter_attempts - 1 and not isinstance(e, RateLimitError):
+                    logger.warning(f"OpenRouter attempt {attempt+1} failed ({str(e)}). Rotating key...")
+                    self._rotate_key()
+                    await asyncio.sleep(1)
+                    continue
+                logger.warning(f"OpenRouter failed ({str(e)}). Immediately switching to Groq backup API...")
+                return await self._make_groq_request(payload)
 
-        raise Exception("Max retries exceeded due to rate limiting. Try again in a few seconds.")
+        return await self._make_groq_request(payload)
 
     async def generate(
         self,
@@ -142,39 +191,34 @@ class LLMProvider:
             "model": self.model,
             "messages": messages,
             "temperature": temperature,
-            "max_tokens": 8192,
+            "max_tokens": 4096,
         }
 
-        # If schema is provided, instruct the model to return JSON
         if schema is not None:
             schema_json = json.dumps(schema.model_json_schema(), indent=2)
             messages[0]["content"] += f"\n\nYou MUST respond with valid JSON matching this schema:\n```json\n{schema_json}\n```\nRespond ONLY with the JSON object, no markdown fences or extra text."
-            # Note: Removed strict response_format as some free models fail silently with it.
 
         for attempt in range(2):
-            try:
-                data = await llm_circuit.call(self._make_request, payload)
-            except CircuitOpenError as e:
-                raise Exception(str(e))
+            data = await self._make_request(payload)
 
-            # Defensive: some free models return errors or empty responses
             if "choices" not in data or not data["choices"]:
                 error_msg = data.get("error", {}).get("message", str(data))
                 logger.error(f"LLM returned no choices: {error_msg}")
-                raise Exception(f"Interview engine error: LLM returned no valid response. Try again.")
+                if attempt == 0:
+                    logger.warning("Retrying LLM call after empty choices...")
+                    await asyncio.sleep(1)
+                    continue
+                raise Exception("Interview engine error: LLM returned no valid response. Try again.")
 
             text = data["choices"][0]["message"]["content"]
 
             if schema is not None:
-                # Clean up common LLM response issues using regex
                 text = text.strip() if text else ""
                 import re
-                # Try to find JSON block enclosed in ```json ... ``` or just ``` ... ```
                 match = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text)
                 if match:
                     text = match.group(1).strip()
                 else:
-                    # Attempt to extract the first { ... } or [ ... ]
                     match = re.search(r"(\{[\s\S]*\}|\[[\s\S]*\])", text)
                     if match:
                         text = match.group(1).strip()
@@ -205,11 +249,9 @@ class LLMProvider:
             schema: Optional Pydantic schema for structured output
             temperature: Creativity control
         """
-        # Build messages array
         messages = [{"role": "system", "content": system_prompt}]
 
         for msg in conversation_history:
-            # Normalize role names
             role = msg["role"]
             if role in ("model", "interviewer"):
                 role = "assistant"
@@ -221,25 +263,24 @@ class LLMProvider:
             "model": self.model,
             "messages": messages,
             "temperature": temperature,
-            "max_tokens": 8192,
+            "max_tokens": 4096,
         }
 
         if schema is not None:
             schema_json = json.dumps(schema.model_json_schema(), indent=2)
             messages[0]["content"] += f"\n\nRespond with valid JSON matching this schema:\n```json\n{schema_json}\n```"
-            # Note: Removed strict response_format as some free models fail silently with it.
 
         for attempt in range(2):
-            try:
-                data = await llm_circuit.call(self._make_request, payload)
-            except CircuitOpenError as e:
-                raise Exception(str(e))
+            data = await self._make_request(payload)
 
-            # Defensive: some free models return errors or empty responses
             if "choices" not in data or not data["choices"]:
                 error_msg = data.get("error", {}).get("message", str(data))
                 logger.error(f"LLM returned no choices (history): {error_msg}")
-                raise Exception(f"Interview engine error: LLM returned no valid response. Try again.")
+                if attempt == 0:
+                    logger.warning("Retrying LLM call after empty choices...")
+                    await asyncio.sleep(1)
+                    continue
+                raise Exception("Interview engine error: LLM returned no valid response. Try again.")
 
             text = data["choices"][0]["message"]["content"]
 

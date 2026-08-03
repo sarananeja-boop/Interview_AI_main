@@ -362,7 +362,7 @@ def delete_session(interview_id: str):
     """Remove a completed session from memory."""
     _sessions.pop(interview_id, None)
 
-async def persist_session(interview_id: str):
+async def persist_session(interview_id: str, db: Any = None):
     """Persist the current in-memory session state to the database."""
     session = _sessions.get(interview_id)
     if not session:
@@ -374,7 +374,7 @@ async def persist_session(interview_id: str):
         from sqlalchemy import select
         from datetime import datetime, timezone
         
-        async with async_session() as db:
+        if db is not None:
             result = await db.execute(
                 select(Interview).where(Interview.id == interview_id)
             )
@@ -382,11 +382,20 @@ async def persist_session(interview_id: str):
             if interview:
                 interview.active_state = session.to_dict()
                 interview.last_heartbeat = datetime.now(timezone.utc)
-                await db.commit()
+        else:
+            async with async_session() as new_db:
+                result = await new_db.execute(
+                    select(Interview).where(Interview.id == interview_id)
+                )
+                interview = result.scalar_one_or_none()
+                if interview:
+                    interview.active_state = session.to_dict()
+                    interview.last_heartbeat = datetime.now(timezone.utc)
+                    await new_db.commit()
     except Exception as e:
         logger.error(f"Failed to persist session {interview_id}: {e}")
 
-async def restore_session(interview_id: str) -> InterviewMemory | None:
+async def restore_session(interview_id: str, db: Any = None) -> InterviewMemory | None:
     """Try to restore a session from the database (after server restart)."""
     if interview_id in _sessions:
         return _sessions[interview_id]
@@ -396,8 +405,8 @@ async def restore_session(interview_id: str) -> InterviewMemory | None:
         from db.tables import Interview, Profile
         from sqlalchemy import select
         
-        async with async_session() as db:
-            result = await db.execute(
+        async def _restore_with_db(session_db: Any) -> InterviewMemory | None:
+            result = await session_db.execute(
                 select(Interview).where(
                     Interview.id == interview_id,
                     Interview.status == "active",
@@ -409,7 +418,7 @@ async def restore_session(interview_id: str) -> InterviewMemory | None:
                 return None
             
             # Get profile data
-            profile_result = await db.execute(
+            profile_result = await session_db.execute(
                 select(Profile).where(Profile.id == interview.profile_id)
             )
             profile_record = profile_result.scalar_one_or_none()
@@ -424,6 +433,12 @@ async def restore_session(interview_id: str) -> InterviewMemory | None:
             _sessions[interview_id] = memory
             logger.info(f"Restored session {interview_id} from database (turn {memory.turn_count})")
             return memory
+
+        if db is not None:
+            return await _restore_with_db(db)
+        else:
+            async with async_session() as new_db:
+                return await _restore_with_db(new_db)
     except Exception as e:
         logger.error(f"Failed to restore session {interview_id}: {e}")
         return None
