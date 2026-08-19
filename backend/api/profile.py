@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from pydantic import BaseModel
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import flag_modified
 
 from config import settings
 from db.database import get_db
@@ -142,46 +143,6 @@ async def upload_resume(
         raise HTTPException(status_code=500, detail="An internal error occurred while processing the profile.")
 
 
-@router.get("/{profile_id}")
-async def get_profile(
-    profile_id: str,
-    user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """Get a parsed profile by ID."""
-    result = await db.execute(
-        select(Profile).where(Profile.id == profile_id, Profile.user_id == user.id)
-    )
-    profile = result.scalar_one_or_none()
-
-    if not profile:
-        raise HTTPException(status_code=404, detail="Profile not found")
-
-    candidate_type = classify_candidate_type(profile.parsed_profile or {})
-
-    import json
-
-    def safe_parse(val):
-        if isinstance(val, str):
-            try:
-                return json.loads(val)
-            except:
-                return val
-        return val
-
-    return {
-        "id": profile.id,
-        "user_id": profile.user_id,
-        "resume_filename": profile.resume_filename,
-        "parsed_profile": profile.parsed_profile,
-        "candidate_type": candidate_type,
-        "strengths": safe_parse(profile.strengths),
-        "weaknesses": safe_parse(profile.weaknesses),
-        "pressure_points": safe_parse(profile.pressure_points),
-        "likely_questions": safe_parse(profile.likely_questions),
-        "created_at": str(profile.created_at),
-    }
-
 
 @router.get("/")
 async def list_profiles(
@@ -198,7 +159,9 @@ async def list_profiles(
         {
             "id": p.id,
             "resume_filename": p.resume_filename,
+            "persona_name": p.persona_name,
             "name": (p.parsed_profile or {}).get("name", "Unknown"),
+            "candidate_type": str(classify_candidate_type(p.parsed_profile or {}).get("type", "fresher")).title(),
             "created_at": str(p.created_at),
         }
         for p in profiles
@@ -343,7 +306,8 @@ async def delete_profile(
 
 
 class UpdatePersonaRequest(BaseModel):
-    name: str | None = None
+    persona_name: str | None = None   # User-facing label for this persona
+    name: str | None = None           # Full name from parsed resume
     hometown: str | None = None
     state: str | None = None
     interests: list[str] | None = None
@@ -360,12 +324,29 @@ async def get_profile(
     profile = result.scalar_one_or_none()
     if not profile:
         raise HTTPException(status_code=404, detail="Persona not found")
-        
+
+    candidate_type_data = classify_candidate_type(profile.parsed_profile or {})
+    candidate_type = str(candidate_type_data.get("type", "fresher")).title()
+
+    import json
+    def safe_parse(val):
+        if isinstance(val, str):
+            try: return json.loads(val)
+            except: return val
+        return val
+
     return {
         "id": profile.id,
+        "user_id": profile.user_id,
         "resume_filename": profile.resume_filename,
-        "created_at": profile.created_at,
+        "persona_name": profile.persona_name,
         "parsed_profile": profile.parsed_profile,
+        "candidate_type": candidate_type,
+        "strengths": safe_parse(profile.strengths),
+        "weaknesses": safe_parse(profile.weaknesses),
+        "pressure_points": safe_parse(profile.pressure_points),
+        "likely_questions": safe_parse(profile.likely_questions),
+        "created_at": str(profile.created_at),
     }
 
 @router.patch("/{profile_id}")
@@ -381,7 +362,12 @@ async def update_profile(
     profile = result.scalar_one_or_none()
     if not profile:
         raise HTTPException(status_code=404, detail="Persona not found")
-        
+
+    # Update persona_name (top-level column)
+    if data.persona_name is not None:
+        profile.persona_name = data.persona_name
+
+    # Update fields stored inside parsed_profile JSON
     p_data = profile.parsed_profile or {}
     if data.name is not None:
         p_data["name"] = data.name
@@ -391,12 +377,17 @@ async def update_profile(
         p_data["state"] = data.state
     if data.interests is not None:
         p_data["interests"] = data.interests
-        
+
     # Trigger SQLAlchemy to detect JSON mutation
     profile.parsed_profile = dict(p_data)
-    
+    flag_modified(profile, "parsed_profile")
+
     await db.commit()
-    return {"status": "success", "parsed_profile": profile.parsed_profile}
+    return {
+        "status": "success",
+        "persona_name": profile.persona_name,
+        "parsed_profile": profile.parsed_profile,
+    }
 
 @router.get("/{profile_id}/history")
 async def get_profile_history(
@@ -405,22 +396,22 @@ async def get_profile_history(
     db: AsyncSession = Depends(get_db),
 ):
     from db.tables import Interview, Evaluation
-    
-    # First verify profile ownership
+
+    # Verify profile ownership
     result = await db.execute(
         select(Profile).where(Profile.id == profile_id, Profile.user_id == user.id)
     )
     if not result.scalar_one_or_none():
         raise HTTPException(status_code=404, detail="Persona not found")
-        
-    # Get interviews
+
+    # Get interviews with evaluations in one query
     result = await db.execute(
         select(Interview, Evaluation)
         .outerjoin(Evaluation, Interview.id == Evaluation.interview_id)
         .where(Interview.profile_id == profile_id, Interview.user_id == user.id)
         .order_by(Interview.started_at.desc())
     )
-    
+
     history = []
     for interview, evaluation in result.all():
         history.append({
@@ -429,9 +420,139 @@ async def get_profile_history(
             "interview_type": interview.interview_type,
             "target_iim": interview.target_iim,
             "started_at": interview.started_at.isoformat() if interview.started_at else None,
-            "ended_at": interview.ended_at.isoformat() if hasattr(interview, 'ended_at') and interview.ended_at else None,
+            "ended_at": interview.ended_at.isoformat() if interview.ended_at else None,
             "persona": interview.panel_config.get("persona", "general") if interview.panel_config else "general",
             "overall_score": evaluation.overall_score if evaluation else None,
+            "evaluation_id": evaluation.id if evaluation else None,
         })
-        
+
     return history
+
+
+@router.get("/{profile_id}/analytics")
+async def get_profile_analytics(
+    profile_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Returns aggregated analytics for a persona — pure DB queries, no LLM calls.
+    Used to power the performance trend chart, dimension scores, and SWOT card.
+    """
+    from db.tables import Interview, Evaluation
+    from statistics import median
+
+    # Verify profile ownership
+    result = await db.execute(
+        select(Profile).where(Profile.id == profile_id, Profile.user_id == user.id)
+    )
+    profile = result.scalar_one_or_none()
+    if not profile:
+        raise HTTPException(status_code=404, detail="Persona not found")
+
+    # Fetch all completed interviews with evaluations for this persona
+    result = await db.execute(
+        select(Interview, Evaluation)
+        .join(Evaluation, Interview.id == Evaluation.interview_id)
+        .where(
+            Interview.profile_id == profile_id,
+            Interview.user_id == user.id,
+            Interview.status == "completed",
+        )
+        .order_by(Interview.started_at.asc())
+    )
+    rows = result.all()
+
+    if not rows:
+        return {
+            "score_history": [],
+            "median_score": None,
+            "dimension_averages": {},
+            "swot": {"strengths": [], "weaknesses": [], "opportunities": [], "threats": []},
+            "interview_count": 0,
+        }
+
+    # --- Score history (for line chart) ---
+    score_history = []
+    all_scores = []
+    dimension_totals: dict[str, list[float]] = {}
+    all_strengths: list[str] = []
+    all_weaknesses: list[str] = []
+    all_improvements: list[str] = []
+    all_high_risks: list[str] = []
+
+    for interview, evaluation in rows:
+        score = evaluation.overall_score
+        if score is not None:
+            all_scores.append(score)
+
+        score_history.append({
+            "interview_id": interview.id,
+            "date": interview.started_at.isoformat() if interview.started_at else None,
+            "score": score,
+            "target_iim": interview.target_iim or "General",
+            "panel": (interview.panel_config or {}).get("persona", "general"),
+        })
+
+        # Aggregate dimension scores
+        if evaluation.dimension_scores:
+            for dim in evaluation.dimension_scores:
+                dim_name = dim.get("dimension", "")
+                dim_score = dim.get("score")
+                if dim_name and dim_score is not None:
+                    dimension_totals.setdefault(dim_name, []).append(float(dim_score))
+
+        # Aggregate SWOT source data
+        if evaluation.strengths:
+            for s in evaluation.strengths:
+                text = s.get("strength", "") if isinstance(s, dict) else str(s)
+                if text: all_strengths.append(text)
+
+        if evaluation.weak_answers:
+            for w in evaluation.weak_answers:
+                text = w.get("issue", "") if isinstance(w, dict) else str(w)
+                if text: all_weaknesses.append(text)
+
+        if evaluation.improvement_plan:
+            for item in evaluation.improvement_plan:
+                if item: all_improvements.append(str(item))
+
+        # high_risk_areas may not exist on older evaluations
+        high_risks = getattr(evaluation, "high_risk_areas", None)
+        if high_risks:
+            for h in high_risks:
+                if h: all_high_risks.append(str(h))
+
+    # --- Dimension averages ---
+    dimension_averages = {
+        dim: round(sum(scores) / len(scores), 2)
+        for dim, scores in dimension_totals.items()
+    }
+
+    # --- Deduplicate SWOT items (keep first N unique) ---
+    def dedup(items: list[str], limit: int = 6) -> list[str]:
+        seen = set()
+        result = []
+        for item in items:
+            key = item.lower().strip()[:80]
+            if key not in seen:
+                seen.add(key)
+                result.append(item)
+            if len(result) >= limit:
+                break
+        return result
+
+    return {
+        "score_history": score_history,
+        "median_score": round(median(all_scores), 2) if all_scores else None,
+        "best_score": round(max(all_scores), 2) if all_scores else None,
+        "latest_score": round(all_scores[-1], 2) if all_scores else None,
+        "dimension_averages": dimension_averages,
+        "swot": {
+            "strengths": dedup(all_strengths),
+            "weaknesses": dedup(all_weaknesses),
+            "opportunities": dedup(all_improvements),
+            "threats": dedup(all_high_risks),
+        },
+        "interview_count": len(rows),
+    }

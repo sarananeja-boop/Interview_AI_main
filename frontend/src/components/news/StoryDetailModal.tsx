@@ -1,6 +1,7 @@
 "use client";
 
-import React from "react";
+import React, { useState, useEffect } from "react";
+import { analyzeStory } from "@/lib/api";
 import "./news-modals.css";
 
 interface StoryDetailModalProps {
@@ -9,9 +10,24 @@ interface StoryDetailModalProps {
 }
 
 export default function StoryDetailModal({ story, onClose }: StoryDetailModalProps) {
-  if (!story) return null;
+  const [analysis, setAnalysis] = useState<any>(story?.ai_analysis || null);
+  const [loading, setLoading] = useState<boolean>(!story?.ai_analysis);
+  const [error, setError] = useState<string | null>(null);
 
-  const analysis = story.ai_analysis;
+  useEffect(() => {
+    if (story && !story.ai_analysis) {
+      setLoading(true);
+      analyzeStory(story.title, story.summary, story.category)
+        .then((res) => {
+          setAnalysis(res.ai_analysis);
+          story.ai_analysis = res.ai_analysis; // Mutate so it's cached for this session
+        })
+        .catch(() => setError("Failed to generate AI analysis. Please try again."))
+        .finally(() => setLoading(false));
+    }
+  }, [story]);
+
+  if (!story) return null;
 
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -41,7 +57,17 @@ export default function StoryDetailModal({ story, onClose }: StoryDetailModalPro
         </div>
 
         <div className="modal-body">
-          {analysis ? (
+          {loading ? (
+            <div className="loading-state">
+              <div className="spinner" />
+              <p className="loading-text">Generating AI intelligence brief...</p>
+            </div>
+          ) : error ? (
+            <div className="no-analysis">
+              <p>{error}</p>
+              <p className="summary-fallback">{story.summary}</p>
+            </div>
+          ) : analysis ? (
             <>
               {analysis.factualSummary?.length > 0 && (
                 <section className="analysis-section">

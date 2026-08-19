@@ -291,21 +291,15 @@ async def fetch_and_cache_news() -> dict:
     # Sort by base_score to prioritize top headlines for AI analysis
     headlines.sort(key=lambda x: -x.get("base_score", 0))
 
-    from core.news_analysis_engine import generate_story_analysis, generate_daily_big_picture
+    from core.news_analysis_engine import generate_daily_big_picture
     
-    # Analyze the top 4 "Must Know" stories to reduce API overhead
+    # We no longer pre-generate ai_analysis for top 4 stories to save API limits.
+    # It will be fetched on-demand via the /api/news/analyze endpoint.
     top_4 = headlines[:4]
     
-    # We gather the AI calls to run concurrently where possible, or sequentially to avoid rate limits
-    # OpenRouter handles concurrency fairly well, but let's do it sequentially to be safe with free tier
     for hl in top_4:
-        analysis = await generate_story_analysis(hl["title"], hl["summary"], hl["category"])
-        if analysis:
-            hl["ai_analysis"] = analysis
-            hl["relevance_level"] = "High Relevance"
-            hl["base_score"] += 20  # Boost for having full analysis
-        else:
-            hl["relevance_level"] = "Medium Relevance"
+        hl["relevance_level"] = "High Relevance"
+        hl["base_score"] += 10
             
     for hl in headlines[4:]:
         hl["relevance_level"] = "Low Relevance" if hl.get("base_score", 0) < 25 else "Medium Relevance"
@@ -477,6 +471,15 @@ def get_relevant_headlines(
     relevant = [hl for score, hl in scored]
 
     return relevant[:n]
+
+def update_headline_analysis(title: str, analysis: dict) -> None:
+    """Save an on-demand generated AI analysis back to the cache to persist across reloads."""
+    cache = _ensure_cache_loaded()
+    for hl in cache.get("headlines", []):
+        if hl["title"] == title:
+            hl["ai_analysis"] = analysis
+            _save_cache(cache, CACHE_FILE)
+            break
 
 
 def get_hot_topics(n: int = 5) -> list[str]:

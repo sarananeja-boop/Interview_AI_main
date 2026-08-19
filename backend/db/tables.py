@@ -41,6 +41,8 @@ class Profile(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
     resume_filename: Mapped[str] = mapped_column(String(255), nullable=True)
+    # User-facing name for this persona (e.g. "Sarandeep — Finance 2026")
+    persona_name: Mapped[str] = mapped_column(String(255), nullable=True)
     raw_text: Mapped[str] = mapped_column(EncryptedText, nullable=True)
     parsed_profile: Mapped[dict] = mapped_column(EncryptedJSON, nullable=True)
     strengths: Mapped[list] = mapped_column(JSON, nullable=True)

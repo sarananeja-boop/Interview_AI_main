@@ -8,12 +8,15 @@ import Logo from "@/app/components/Logo";
 import { useEffect, useState, Suspense, useRef } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { getProfile, updateProfile, startInterview, ensureAuth } from "@/lib/api";
+import { getProfile, updateProfile, startInterview, ensureAuth, getActivePersonaId } from "@/lib/api";
 
 function SetupContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const profileId = searchParams.get("profile");
+  // Use URL param if given, otherwise fall back to active persona from localStorage
+  const urlProfileId = searchParams.get("profile");
+  const [resolvedProfileId, setResolvedProfileId] = useState<string | null>(urlProfileId);
+  const profileId = resolvedProfileId;
 
   const [profile, setProfile] = useState<Record<string, unknown> | null>(null);
   const [persona, setPersona] = useState("iim_general");
@@ -55,17 +58,26 @@ function SetupContent() {
   useEffect(() => {
     async function init() {
       await ensureAuth();
-      if (profileId) {
-        getProfile(profileId).then(p => {
+      // Determine which profile to load:
+      // 1. URL param takes precedence
+      // 2. Otherwise fall back to active persona from localStorage
+      const idToLoad = urlProfileId || getActivePersonaId();
+      if (idToLoad && idToLoad !== resolvedProfileId) {
+        setResolvedProfileId(idToLoad);
+      }
+      if (idToLoad) {
+        getProfile(idToLoad).then(p => {
           setProfile(p);
-          if (p.hometown) setHometown(p.hometown as string);
-          if (p.state) setUserState(p.state as string);
-          if (p.interests) setInterests(p.interests as string[]);
+          const pp = (p.parsed_profile as Record<string, unknown>) || {};
+          if (pp.hometown) setHometown(pp.hometown as string);
+          if (pp.state) setUserState(pp.state as string);
+          if (pp.interests) setInterests(pp.interests as string[]);
         }).catch(() => setError("Failed to load profile"));
       }
     }
     init();
-  }, [profileId, router]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [urlProfileId]);
 
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
@@ -99,7 +111,6 @@ function SetupContent() {
     setError("");
     setLoading(true);
     try {
-      await updateProfile(profileId, { hometown, state: userState, interests });
       const data = await startInterview(profileId, persona, "iim_general");
       router.push(`/interview/prepare?id=${data.interview_id}`);
     } catch (err: unknown) {
@@ -141,6 +152,10 @@ function SetupContent() {
           <Link className="nav-item" href="/dashboard/news">
             <span className="material-symbols-outlined filled" style={{ fontSize: 20 }}>article</span>
             Daily News
+          </Link>
+          <Link className="nav-item" href="/dashboard/personas">
+            <span className="material-symbols-outlined" style={{ fontSize: 20 }}>folder_shared</span>
+            Personas
           </Link>
           <Link className="nav-item nav-item-active" href="/interview/setup">
             <span className="material-symbols-outlined" style={{ fontSize: 20 }}>psychology</span>
@@ -186,6 +201,34 @@ function SetupContent() {
             </button>
           </div>
         </header>
+
+        {/* ── Active Persona Banner ── */}
+        {profile && (
+          <div style={{
+            display: "flex", alignItems: "center", justifyContent: "space-between",
+            padding: "1rem 1.5rem", borderRadius: 16, marginBottom: "2rem",
+            background: "rgba(34,197,94,0.08)", border: "1px solid rgba(34,197,94,0.25)",
+            backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)",
+            animation: "fadeInBanner 0.3s ease",
+            boxShadow: "0 4px 20px rgba(0,0,0,0.05)"
+          }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "0.8rem" }}>
+              <span className="material-symbols-outlined" style={{ fontSize: 22, color: "#22c55e" }}>radio_button_checked</span>
+              <span style={{ fontSize: "0.95rem", color: "var(--on-surface)" }}>
+                <span style={{ fontWeight: 600, color: "#22c55e" }}>Interviewing as: </span>
+                {(profile as any)?.persona_name || (profile?.parsed_profile as any)?.name || "Your Persona"}
+              </span>
+              <span style={{ fontSize: "0.8rem", color: "var(--outline)", background: "color-mix(in srgb, var(--on-surface) 6%, transparent)", padding: "4px 10px", borderRadius: 20, fontWeight: 500 }}>
+                {(profile as any)?.candidate_type || "Candidate"}
+              </span>
+            </div>
+            <Link href="/dashboard/personas" style={{ fontSize: "0.85rem", color: "var(--on-surface-variant)", textDecoration: "none", display: "flex", alignItems: "center", gap: 6, fontWeight: 500, transition: "color 0.2s" }} className="change-persona-link">
+              <span className="material-symbols-outlined" style={{ fontSize: 16 }}>swap_horiz</span>
+              Change Persona
+            </Link>
+          </div>
+        )}
+
 
         {/* Profile Summary Card */}
         {profile && parsed && (
@@ -245,111 +288,7 @@ function SetupContent() {
           </div>
         )}
 
-        {/* Your Details (Hometown, State, Interests) */}
-        {profile && parsed && (
-          <div className="interests-section glass-panel animate-fade-in" style={{ marginTop: '2rem', marginBottom: '3rem', padding: 'var(--space-xl)', borderRadius: 'var(--radius-xl)' }}>
-            <h2 className="profile-title" style={{ marginBottom: '1.5rem' }}>Your Details & Interests</h2>
-            <p className="desc-text" style={{ marginBottom: '2rem' }}>Provide this information to allow the AI to ask targeted current affairs and regional questions.</p>
-            
-            <div style={{ display: 'flex', gap: '1rem', marginBottom: '2rem' }}>
-              <div className="field-group" style={{ flex: 1 }}>
-                <label className="field-label">Hometown</label>
-                <input 
-                  type="text" 
-                  className="custom-interest-input" 
-                  value={hometown} 
-                  onChange={(e) => setHometown(e.target.value)} 
-                  placeholder="E.g., Pune" 
-                  style={{ width: '100%', padding: '0.75rem 1rem', borderRadius: 'var(--radius-md)', border: '1px solid var(--outline-variant)', background: 'transparent', color: 'var(--on-surface)' }}
-                />
-              </div>
-              <div className="field-group" style={{ flex: 1 }}>
-                <label className="field-label">State</label>
-                <select 
-                  className="custom-interest-input" 
-                  value={userState} 
-                  onChange={(e) => setUserState(e.target.value)} 
-                  style={{ width: '100%', padding: '0.75rem 1rem', borderRadius: 'var(--radius-md)', border: '1px solid var(--outline-variant)', background: 'transparent', color: 'var(--on-surface)', appearance: 'none' }}
-                >
-                  <option value="" disabled style={{ color: 'black' }}>Select State...</option>
-                  {INDIAN_STATES.map(state => (
-                    <option key={state} value={state} style={{ color: 'black' }}>{state}</option>
-                  ))}
-                </select>
-              </div>
-            </div>
 
-            <label className="field-label" style={{ marginBottom: '1rem' }}>Select Areas of Interest (Max 3)</label>
-            <div className="interests-grid" style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem', marginBottom: '1.5rem' }}>
-              {CATEGORIES.map(cat => (
-                <button
-                  key={cat.id}
-                  className={`interest-chip ${interests.includes(cat.id) ? 'interest-selected' : ''}`}
-                  onClick={() => {
-                    if (interests.includes(cat.id)) {
-                      setInterests(interests.filter(i => i !== cat.id));
-                    } else if (interests.length < 3) {
-                      setInterests([...interests, cat.id]);
-                    }
-                  }}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '0.5rem',
-                    padding: '8px 16px',
-                    borderRadius: '20px',
-                    border: interests.includes(cat.id) ? '2px solid var(--primary)' : '1px solid var(--outline-variant)',
-                    background: interests.includes(cat.id) ? 'var(--primary-container)' : 'transparent',
-                    color: interests.includes(cat.id) ? 'var(--on-primary-container)' : 'var(--on-surface)',
-                    cursor: interests.length >= 3 && !interests.includes(cat.id) ? 'not-allowed' : 'pointer',
-                    opacity: interests.length >= 3 && !interests.includes(cat.id) ? 0.5 : 1
-                  }}
-                >
-                  <span className="material-symbols-outlined" style={{ fontSize: '18px' }}>{cat.icon}</span>
-                  {cat.label}
-                </button>
-              ))}
-            </div>
-
-            <div className="custom-interest-row" style={{ display: 'flex', gap: '0.5rem' }}>
-              <input 
-                type="text" 
-                className="custom-interest-input" 
-                value={customInterest} 
-                onChange={e => setCustomInterest(e.target.value)} 
-                placeholder="Other interest..." 
-                style={{ flex: 1, padding: '0.75rem 1rem', borderRadius: 'var(--radius-md)', border: '1px solid var(--outline-variant)', background: 'transparent', color: 'var(--on-surface)' }}
-              />
-              <button 
-                className="add-interest-btn"
-                onClick={() => {
-                  if (customInterest && interests.length < 3 && !interests.includes(customInterest)) {
-                    setInterests([...interests, customInterest]);
-                    setCustomInterest("");
-                  }
-                }}
-                disabled={!customInterest || interests.length >= 3}
-                style={{ padding: '0.75rem 1.5rem', borderRadius: 'var(--radius-md)', background: 'var(--primary)', color: 'var(--background)', border: 'none', cursor: 'pointer' }}
-              >
-                Add
-              </button>
-            </div>
-            
-            {/* Display Selected Interests */}
-            {interests.length > 0 && (
-              <div style={{ marginTop: '1rem', display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
-                {interests.map(i => (
-                  <span key={i} style={{ padding: '4px 12px', background: 'color-mix(in srgb, var(--primary) 20%, transparent)', color: 'var(--primary)', borderRadius: '12px', fontSize: '12px', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                    {i}
-                    <button onClick={() => setInterests(interests.filter(item => item !== i))} style={{ background: 'none', border: 'none', color: 'var(--primary)', cursor: 'pointer', padding: 0, display: 'flex', alignItems: 'center' }}>
-                      <span className="material-symbols-outlined" style={{ fontSize: '14px' }}>close</span>
-                    </button>
-                  </span>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
 
         {/* Persona Selection Grid */}
         <div className="persona-grid" ref={gridRef}>

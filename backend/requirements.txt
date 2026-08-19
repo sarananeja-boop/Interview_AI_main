@@ -34,3 +34,6 @@ websockets>=13.0
 cryptography>=41.0.0
 slowapi>=0.1.9
 certifi>=2023.7.22
+email-validator>=2.0.0
+feedparser
+duckduckgo-search

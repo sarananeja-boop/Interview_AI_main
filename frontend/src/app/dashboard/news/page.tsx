@@ -75,7 +75,7 @@ export default function NewsPage() {
     fetchNews(newCategories);
   };
   
-  const mustKnowStories = headlines.filter(h => h.ai_analysis);
+  const mustKnowStories = headlines.filter(h => h.relevance_level === "High Relevance");
   const otherStories = headlines.filter(h => !mustKnowStories.includes(h));
   
   const displayStories = activeMode === "must_know" ? mustKnowStories : otherStories;
@@ -102,6 +102,10 @@ export default function NewsPage() {
           <Link className="nav-item nav-item-active" href="/dashboard/news">
             <span className="material-symbols-outlined filled" style={{ fontSize: 20 }}>article</span>
             Daily News
+          </Link>
+          <Link className="nav-item" href="/dashboard/personas">
+            <span className="material-symbols-outlined" style={{ fontSize: 20 }}>folder_shared</span>
+            Personas
           </Link>
           <Link className="nav-item" href="/interview/setup">
             <span className="material-symbols-outlined" style={{ fontSize: 20 }}>psychology</span>
@@ -228,10 +232,18 @@ export default function NewsPage() {
               {displayStories.length === 0 ? (
                 <div className="empty-state">
                   <span className="material-symbols-outlined" style={{ fontSize: 40, color: "var(--outline)", marginBottom: "0.75rem" }}>
-                    newspaper
+                    {headlines.length === 0 ? "hourglass_empty" : "newspaper"}
                   </span>
-                  <h3 className="empty-title">No News Found</h3>
-                  <p className="empty-sub">Try selecting different topics or check back later.</p>
+                  <h3 className="empty-title">
+                    {headlines.length === 0 
+                      ? "Curating Latest Intelligence..." 
+                      : "No News Found"}
+                  </h3>
+                  <p className="empty-sub">
+                    {headlines.length === 0 
+                      ? "The AI is currently fetching and analyzing today's top stories. Please check back in a minute or two." 
+                      : "Try selecting different topics or check back later."}
+                  </p>
                 </div>
               ) : (
                 <div className="news-grid">
@@ -280,16 +292,12 @@ export default function NewsPage() {
                           <button className="action-btn" onClick={() => headline.url && window.open(headline.url, "_blank")}>
                             <span className="material-symbols-outlined" style={{ fontSize: 16 }}>open_in_new</span> Read
                           </button>
-                          {headline.ai_analysis && (
-                            <>
-                              <button className="action-btn outline" onClick={() => setActiveStoryDetail(headline)}>
-                                <span className="material-symbols-outlined" style={{ fontSize: 16 }}>info</span> Understand
-                              </button>
-                              <button className="action-btn outline" onClick={() => setActiveQuizStory(headline)}>
-                                <span className="material-symbols-outlined" style={{ fontSize: 16 }}>quiz</span> Quiz Me
-                              </button>
-                            </>
-                          )}
+                          <button className="action-btn outline" onClick={() => setActiveStoryDetail(headline)}>
+                            <span className="material-symbols-outlined" style={{ fontSize: 16 }}>info</span> Understand
+                          </button>
+                          <button className="action-btn outline" onClick={() => setActiveQuizStory(headline)}>
+                            <span className="material-symbols-outlined" style={{ fontSize: 16 }}>quiz</span> Quiz Me
+                          </button>
                         </div>
                       ) : (
                         <div className="card-actions" style={{ marginTop: 'auto' }}>

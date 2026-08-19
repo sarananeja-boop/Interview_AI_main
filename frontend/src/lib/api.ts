@@ -291,7 +291,16 @@ export async function sendTelemetry(interviewId: string, interimText: string, st
 
 // ============ Personas / Profiles ============
 
-export async function updateProfile(profileId: string, profileData: { name?: string; hometown?: string; state?: string; interests?: string[] }) {
+export async function updateProfile(
+  profileId: string,
+  profileData: {
+    persona_name?: string;
+    name?: string;
+    hometown?: string;
+    state?: string;
+    interests?: string[];
+  }
+) {
   const res = await apiFetch(`/api/profile/${profileId}`, {
     method: "PATCH",
     body: JSON.stringify(profileData),
@@ -312,9 +321,35 @@ export async function getProfileHistory(profileId: string) {
   return res.json();
 }
 
-export async function setActiveProfileId(profileId: string) {
+/** Fetch aggregated analytics for a persona (score history, SWOT, dimension averages). Pure DB — no LLM. */
+export async function getPersonaAnalytics(profileId: string) {
+  const res = await apiFetch(`/api/profile/${profileId}/analytics`);
+  if (!res.ok) {
+    const data = await res.json();
+    throw new Error(data.detail || "Failed to get persona analytics");
+  }
+  return res.json();
+}
+
+// ---------- Active Persona (localStorage) ----------
+
+/** Get the currently active persona ID (site-wide). */
+export function getActivePersonaId(): string | null {
+  if (typeof window === "undefined") return null;
+  return localStorage.getItem("active_profile_id");
+}
+
+/** Set the active persona site-wide. Persisted until user changes it. */
+export function setActivePersonaId(profileId: string) {
   if (typeof window !== "undefined") {
     localStorage.setItem("active_profile_id", profileId);
+  }
+}
+
+/** Clear the active persona (e.g., when the active persona is deleted). */
+export function clearActivePersonaId() {
+  if (typeof window !== "undefined") {
+    localStorage.removeItem("active_profile_id");
   }
 }
 
@@ -326,6 +361,18 @@ export async function getDailyNews(categories: string[]) {
   if (!res.ok) {
     const data = await res.json();
     throw new Error(data.detail || "Failed to fetch news");
+  }
+  return res.json();
+}
+
+export async function analyzeStory(title: string, summary: string, category: string) {
+  const res = await apiFetch("/api/news/analyze", {
+    method: "POST",
+    body: JSON.stringify({ title, summary, category }),
+  });
+  if (!res.ok) {
+    const data = await res.json();
+    throw new Error(data.detail || "Failed to analyze story");
   }
   return res.json();
 }

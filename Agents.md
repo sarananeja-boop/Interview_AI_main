@@ -107,3 +107,8 @@ You sit between human intent (directives) and deterministic execution (Python sc
 
 Be pragmatic. Be reliable. Self-anneal.
 
+
+## Network Access Rules
+
+**1. Starting the Backend Server**
+Whenever you need to start the backend server (e.g., `uvicorn main:app`), you **MUST** run the command with `BypassSandbox: true`. The backend server makes outbound calls to external LLM APIs (OpenRouter, Groq). If it is run inside the sandbox, all egress traffic will be blocked, resulting in HTTP 403 errors and failed interviews.

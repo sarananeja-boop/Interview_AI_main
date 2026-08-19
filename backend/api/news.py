@@ -3,7 +3,9 @@ from typing import List
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
-from core.current_affairs_engine import get_relevant_headlines, _ensure_cache_loaded
+from pydantic import BaseModel
+from core.current_affairs_engine import get_relevant_headlines, _ensure_cache_loaded, update_headline_analysis
+from core.news_analysis_engine import generate_story_analysis
 from api.auth import get_current_user
 from db.database import get_db
 from db.tables import Profile, User
@@ -51,4 +53,18 @@ async def get_daily_news(
         "big_picture": big_picture,
         "priority_topics": priority_topics
     }
- 
+
+class AnalyzeRequest(BaseModel):
+    title: str
+    summary: str
+    category: str
+
+@router.post("/analyze")
+async def analyze_news_story(req: AnalyzeRequest, user: User = Depends(get_current_user)):
+    """
+    On-demand analysis of a single news story for 'Understand' and 'Quiz Me' features.
+    """
+    analysis = await generate_story_analysis(req.title, req.summary, req.category)
+    if analysis:
+        update_headline_analysis(req.title, analysis)
+    return {"ai_analysis": analysis}

@@ -3,6 +3,7 @@
 import SettingsModal from "@/app/components/SettingsModal";
 import ThemeToggle from "@/app/components/ThemeToggle";
 import Logo from "@/app/components/Logo";
+import ActivityCalendar from "@/app/components/ActivityCalendar";
 import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -29,6 +30,7 @@ export default function DashboardPage() {
   const [user, setUser] = useState<{ name: string; email: string } | null>(null);
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [recentInterviews, setRecentInterviews] = useState<InterviewRecord[]>([]);
+  const [activityData, setActivityData] = useState<Record<string, number>>({});
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState("");
   const [dragActive, setDragActive] = useState(false);
@@ -55,6 +57,16 @@ export default function DashboardPage() {
     try {
       const data = await listInterviewHistory();
       setRecentInterviews(data.slice(0, 3));
+      
+      const counts: Record<string, number> = {};
+      data.forEach((interview: InterviewRecord) => {
+        if (interview.started_at) {
+          const date = new Date(interview.started_at);
+          const dateStr = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+          counts[dateStr] = (counts[dateStr] || 0) + 1;
+        }
+      });
+      setActivityData(counts);
     } catch {
       /* ignore */
     }
@@ -131,6 +143,10 @@ export default function DashboardPage() {
           <Link className="nav-item" href="/dashboard/news">
             <span className="material-symbols-outlined filled" style={{ fontSize: 20 }}>article</span>
             Daily News
+          </Link>
+          <Link className="nav-item" href="/dashboard/personas">
+            <span className="material-symbols-outlined" style={{ fontSize: 20 }}>folder_shared</span>
+            Personas
           </Link>
           <Link className="nav-item" href="/interview/setup">
             <span className="material-symbols-outlined" style={{ fontSize: 20 }}>psychology</span>
@@ -220,6 +236,15 @@ export default function DashboardPage() {
           {uploadError && (
             <div className="error-msg">{uploadError}</div>
           )}
+        </div>
+
+        {/* ── Activity Calendar ── */}
+        <div className="section-card">
+          <h2 className="section-title">
+            <span className="material-symbols-outlined" style={{ fontSize: 20 }}>calendar_month</span>
+            Practice Consistency
+          </h2>
+          <ActivityCalendar data={activityData} weeks={52} />
         </div>
 
         {/* ── Profiles List ── */}

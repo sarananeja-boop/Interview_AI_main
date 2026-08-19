@@ -156,6 +156,10 @@ export default function HistoryPage() {
             <span className="material-symbols-outlined filled" style={{ fontSize: 20 }}>article</span>
             Daily News
           </Link>
+          <Link className="nav-item" href="/dashboard/personas">
+            <span className="material-symbols-outlined" style={{ fontSize: 20 }}>folder_shared</span>
+            Personas
+          </Link>
           <Link className="nav-item" href="/interview/setup">
             <span className="material-symbols-outlined" style={{ fontSize: 20 }}>psychology</span>
             New Interview

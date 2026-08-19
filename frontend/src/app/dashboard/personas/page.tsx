@@ -4,10 +4,14 @@ import SettingsModal from "@/app/components/SettingsModal";
 import ThemeToggle from "@/app/components/ThemeToggle";
 import Logo from "@/app/components/Logo";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { isAuthenticated, getUser, logout, listProfiles, uploadResume, deleteProfile, pasteResume, setActiveProfileId } from "@/lib/api";
+import {
+  isAuthenticated, getUser, logout,
+  listProfiles, uploadResume, deleteProfile, pasteResume,
+  updateProfile, getActivePersonaId, setActivePersonaId, clearActivePersonaId,
+} from "@/lib/api";
 
 export default function PersonasPage() {
   const router = useRouter();
@@ -20,6 +24,13 @@ export default function PersonasPage() {
   const [activeTab, setActiveTab] = useState<"upload" | "paste">("upload");
   const [pasteText, setPasteText] = useState("");
   const [pasteName, setPasteName] = useState("");
+  const [activePersonaId, setActivePersonaIdState] = useState<string | null>(null);
+
+  // Naming modal state
+  const [namingModal, setNamingModal] = useState<{ show: boolean; profileId: string; suggestedName: string } | null>(null);
+  const [personaNameInput, setPersonaNameInput] = useState("");
+  const [namingSaving, setNamingSaving] = useState(false);
+  const nameInputRef = useRef<HTMLInputElement>(null);
 
   const loadProfiles = useCallback(async () => {
     try {
@@ -29,38 +40,77 @@ export default function PersonasPage() {
   }, []);
 
   useEffect(() => {
-    if (!isAuthenticated()) {
-      router.push("/login");
-      return;
-    }
+    if (!isAuthenticated()) { router.push("/login"); return; }
     setUser(getUser());
+    setActivePersonaIdState(getActivePersonaId());
     loadProfiles();
   }, [router, loadProfiles]);
 
-  const handleFileUpload = async (file: File) => {
-    if (profiles.length >= 5) {
-      setUploadError("Maximum 5 personas allowed.");
-      return;
+  // Focus name input when modal opens
+  useEffect(() => {
+    if (namingModal?.show) {
+      setTimeout(() => nameInputRef.current?.focus(), 100);
     }
+  }, [namingModal?.show]);
+
+  const handleFileUpload = async (file: File) => {
+    if (profiles.length >= 5) { setUploadError("Maximum 5 personas allowed."); return; }
     setUploadError(""); setUploading(true);
-    try { await uploadResume(file); await loadProfiles(); } 
-    catch (err: any) { setUploadError(err.message); } 
+    try {
+      const result = await uploadResume(file);
+      await loadProfiles();
+      // Show naming modal
+      const suggestedName = result?.parsed_profile?.name || file.name.replace(/\.[^.]+$/, "");
+      setPersonaNameInput(suggestedName);
+      setNamingModal({ show: true, profileId: result.id, suggestedName });
+    }
+    catch (err: any) { setUploadError(err.message); }
     finally { setUploading(false); }
   };
-  const handleDrop = (e: any) => { e.preventDefault(); setDragActive(false); const f = e.dataTransfer.files[0]; if(f) handleFileUpload(f); };
-  const handleFileInput = (e: any) => { const f = e.target.files?.[0]; if(f) handleFileUpload(f); };
+  const handleDrop = (e: any) => { e.preventDefault(); setDragActive(false); const f = e.dataTransfer.files[0]; if (f) handleFileUpload(f); };
+  const handleFileInput = (e: any) => { const f = e.target.files?.[0]; if (f) handleFileUpload(f); };
+
   const handlePasteSubmit = async () => {
     if (profiles.length >= 5) { setUploadError("Maximum 5 personas allowed."); return; }
     if (!pasteText.trim()) { setUploadError("Paste text first."); return; }
     setUploadError(""); setUploading(true);
-    try { await pasteResume(pasteText, pasteName || "Pasted Resume"); setPasteText(""); setPasteName(""); await loadProfiles(); }
+    try {
+      const result = await pasteResume(pasteText, pasteName || "Pasted Resume");
+      setPasteText(""); setPasteName("");
+      await loadProfiles();
+      const suggestedName = result?.parsed_profile?.name || pasteName || "My Persona";
+      setPersonaNameInput(suggestedName);
+      setNamingModal({ show: true, profileId: result.id, suggestedName });
+    }
     catch (err: any) { setUploadError(err.message); }
     finally { setUploading(false); }
   };
-  const handleDeleteProfile = async (id: string) => {
-    if (!window.confirm("Delete persona?")) return;
-    try { await deleteProfile(id); await loadProfiles(); } catch (err: any) { alert(err.message); }
+
+  const handleNamingSave = async () => {
+    if (!namingModal) return;
+    setNamingSaving(true);
+    try {
+      await updateProfile(namingModal.profileId, { persona_name: personaNameInput || namingModal.suggestedName });
+      await loadProfiles();
+      setNamingModal(null);
+    } catch { /* naming is non-critical — just close */ setNamingModal(null); }
+    finally { setNamingSaving(false); }
   };
+
+  const handleDeleteProfile = async (id: string) => {
+    if (!window.confirm("Delete persona? This also deletes all its interviews and evaluations.")) return;
+    try {
+      await deleteProfile(id);
+      if (getActivePersonaId() === id) { clearActivePersonaId(); setActivePersonaIdState(null); }
+      await loadProfiles();
+    } catch (err: any) { alert(err.message); }
+  };
+
+  const handleSetActive = (id: string) => {
+    setActivePersonaId(id);
+    setActivePersonaIdState(id);
+  };
+
 
     if (!user) return null;
 
@@ -166,6 +216,63 @@ export default function PersonasPage() {
           margin-bottom: var(--space-xl);
         }
 
+        .upload-card {
+          background: var(--surface);
+          border: 1px solid var(--border-subtle);
+          border-radius: var(--radius-lg);
+          padding: 0;
+          margin-bottom: var(--space-xl);
+          overflow: hidden;
+        }
+
+        .upload-card-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          padding: 1.25rem 1.5rem;
+          border-bottom: 1px solid var(--border-subtle);
+          background: rgba(255, 255, 255, 0.02);
+        }
+
+        .upload-card-title {
+          font-size: 1.1rem;
+          font-weight: 600;
+          color: var(--on-surface);
+          margin: 0;
+        }
+
+        .tab-switcher {
+          display: flex;
+          background: rgba(0, 0, 0, 0.2);
+          border-radius: 20px;
+          padding: 4px;
+        }
+
+        .tab-btn {
+          display: flex;
+          align-items: center;
+          gap: 0.5rem;
+          padding: 0.5rem 1rem;
+          border-radius: 16px;
+          border: none;
+          background: transparent;
+          color: var(--on-surface-variant);
+          font-size: 0.85rem;
+          font-weight: 500;
+          cursor: pointer;
+          transition: all 0.2s ease;
+        }
+
+        .tab-btn:hover {
+          color: var(--on-surface);
+        }
+
+        .tab-active {
+          background: var(--surface-variant);
+          color: var(--on-surface);
+          box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
         .upload-zone {
           border: 2px dashed rgba(255, 255, 255, 0.1);
           border-radius: var(--radius-lg);
@@ -218,14 +325,113 @@ export default function PersonasPage() {
         .profiles-list {
           display: flex;
           flex-direction: column;
-          gap: var(--space-md);
+          gap: 1rem;
         }
 
         .profile-card {
           display: flex;
           align-items: center;
-          gap: var(--space-lg);
-          padding: var(--space-lg);
+          gap: 1.25rem;
+          padding: 1.25rem 1.5rem;
+          background: var(--surface);
+          border: var(--border-subtle);
+          border-radius: var(--radius-lg);
+          transition: all var(--transition-base);
+          box-shadow: var(--shadow-sm);
+        }
+
+        .profile-card:hover {
+          border-color: var(--primary-fixed-dim);
+          box-shadow: var(--shadow-md);
+          transform: translateY(-2px);
+        }
+
+        .profile-card-active {
+          border: 1px solid var(--primary);
+          background: var(--surface-container-lowest);
+          box-shadow: 0 4px 20px rgba(21, 69, 57, 0.08);
+        }
+
+        .profile-icon-wrap {
+          width: 48px;
+          height: 48px;
+          border-radius: 12px;
+          background: var(--primary-container);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          flex-shrink: 0;
+        }
+
+        .profile-info {
+          flex: 1;
+          min-width: 0;
+        }
+
+        .profile-name {
+          font-family: var(--font-display);
+          font-size: 1.15rem;
+          font-weight: 600;
+          color: var(--on-surface);
+          margin-bottom: 2px;
+        }
+
+        .profile-meta {
+          font-size: 0.85rem;
+          color: var(--outline);
+        }
+
+        .profile-actions {
+          display: flex;
+          align-items: center;
+          gap: 0.75rem;
+        }
+
+        .action-btn {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          gap: 6px;
+          padding: 0.6rem 1rem;
+          border-radius: 8px;
+          border: 1px solid var(--border-subtle);
+          background: var(--surface);
+          color: var(--on-surface-variant);
+          font-size: 0.85rem;
+          font-weight: 500;
+          cursor: pointer;
+          transition: all 0.2s ease;
+          text-decoration: none;
+        }
+
+        .action-btn:hover {
+          background: var(--surface-variant);
+          color: var(--on-surface);
+          border-color: var(--border-medium);
+        }
+
+        .delete-btn {
+          color: var(--error);
+          border-color: transparent;
+          background: transparent;
+          padding: 0.6rem;
+        }
+
+        .delete-btn:hover {
+          background: var(--error-container);
+          color: var(--on-error-container);
+          border-color: transparent;
+        }
+
+        .start-btn {
+          background: var(--primary);
+          color: var(--on-primary);
+          border: none;
+        }
+
+        .start-btn:hover {
+          background: var(--primary-container);
+          color: var(--on-primary);
         }
 
         @media (max-width: 768px) {
@@ -1218,25 +1424,46 @@ export default function PersonasPage() {
               <span className="profile-count">{profiles.length} profile{profiles.length !== 1 ? "s" : ""}</span>
           </div>
           <div className="profiles-list">
-            {profiles.map((p) => (
-              <div key={p.id} className="profile-card">
-                <div className="profile-icon-wrap">
-                  <span className="material-symbols-outlined" style={{ fontSize: 22, color: "var(--primary)" }}>description</span>
+            {profiles.map((p) => {
+              const isPersonaActive = activePersonaId === p.id;
+              const displayName = p.persona_name || p.name || "Unnamed Profile";
+              return (
+                <div key={p.id} className={`profile-card ${isPersonaActive ? "profile-card-active" : ""}`}>
+                  <div className="profile-icon-wrap" style={{ position: "relative" }}>
+                    <span className="material-symbols-outlined" style={{ fontSize: 22, color: "var(--primary)" }}>description</span>
+                    {isPersonaActive && (
+                      <span title="Active Persona" style={{ position: "absolute", top: -4, right: -4, width: 10, height: 10, background: "#22c55e", borderRadius: "50%", border: "2px solid var(--surface)" }} />
+                    )}
+                  </div>
+                  <div className="profile-info">
+                    <div className="profile-name" style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                      {displayName}
+                      {isPersonaActive && (
+                        <span style={{ fontSize: "0.68rem", fontWeight: 600, color: "#22c55e", background: "rgba(34,197,94,0.1)", border: "1px solid rgba(34,197,94,0.25)", padding: "2px 8px", borderRadius: 20, letterSpacing: "0.04em" }}>
+                          ACTIVE
+                        </span>
+                      )}
+                    </div>
+                    <div className="profile-meta">{p.candidate_type || "Candidate"} • {new Date(p.created_at).toLocaleDateString()}</div>
+                  </div>
+                  <div className="profile-actions" style={{ gap: "0.5rem", flexWrap: "wrap" }}>
+                    {!isPersonaActive && (
+                      <button className="action-btn" onClick={() => handleSetActive(p.id)} title="Set as active persona"
+                        style={{ background: "rgba(34,197,94,0.08)", color: "#22c55e", border: "1px solid rgba(34,197,94,0.25)" }}>
+                        <span className="material-symbols-outlined" style={{ fontSize: 16 }}>radio_button_unchecked</span>
+                        Set Active
+                      </button>
+                    )}
+                    <button className="action-btn delete-btn" onClick={() => handleDeleteProfile(p.id)} title="Delete">
+                      <span className="material-symbols-outlined" style={{ fontSize: 18 }}>delete</span>
+                    </button>
+                    <Link href={`/dashboard/personas/${p.id}`} className="action-btn start-btn" style={{ textDecoration: "none" }}>
+                      <span className="material-symbols-outlined" style={{ fontSize: 18 }}>open_in_new</span> Open
+                    </Link>
+                  </div>
                 </div>
-                <div className="profile-info">
-                  <div className="profile-name">{p.name || "Unnamed Profile"}</div>
-                  <div className="profile-meta">{p.resume_filename} • {new Date(p.created_at).toLocaleDateString()}</div>
-                </div>
-                <div className="profile-actions" style={{ gap: '0.5rem' }}>
-                  <button className="action-btn delete-btn" onClick={() => handleDeleteProfile(p.id)} title="Delete">
-                    <span className="material-symbols-outlined" style={{ fontSize: 18 }}>delete</span>
-                  </button>
-                  <Link href={`/dashboard/personas/${p.id}`} className="action-btn start-btn" style={{ textDecoration: 'none' }}>
-                    <span className="material-symbols-outlined" style={{ fontSize: 18 }}>settings</span> Manage Details
-                  </Link>
-                </div>
-              </div>
-            ))}
+              );
+            })}
             {profiles.length === 0 && !uploading && (
               <div className="auth-error" style={{ background: "transparent", color: "var(--outline)" }}>No personas yet. Create one above.</div>
             )}
@@ -1244,7 +1471,38 @@ export default function PersonasPage() {
         </section>
       </main>
 
-
+      {/* ── Naming Modal ── */}
+      {namingModal?.show && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", backdropFilter: "blur(4px)", zIndex: 9000, display: "flex", alignItems: "center", justifyContent: "center", padding: "1rem" }}>
+          <div style={{ background: "var(--surface)", border: "1px solid var(--border-subtle)", borderRadius: 20, padding: "2rem", maxWidth: 440, width: "100%", boxShadow: "0 32px 80px rgba(0,0,0,0.3)", animation: "slideUp 0.25s ease" }}>
+            <style>{`@keyframes slideUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }`}</style>
+            {/* Success icon */}
+            <div style={{ width: 56, height: 56, borderRadius: "50%", background: "rgba(34,197,94,0.12)", border: "2px solid rgba(34,197,94,0.3)", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 1.25rem" }}>
+              <span className="material-symbols-outlined" style={{ fontSize: 28, color: "#22c55e" }}>check_circle</span>
+            </div>
+            <h2 style={{ fontFamily: "var(--font-display)", fontSize: "1.25rem", fontWeight: 700, color: "var(--on-surface)", textAlign: "center", marginBottom: "0.5rem" }}>Persona Created!</h2>
+            <p style={{ fontSize: "0.875rem", color: "var(--outline)", textAlign: "center", marginBottom: "1.5rem" }}>Your CV has been parsed. Give this persona a name so you can find it easily.</p>
+            <div style={{ marginBottom: "1.5rem" }}>
+              <label style={{ display: "block", fontSize: "0.75rem", fontWeight: 700, color: "var(--on-surface-variant)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: "0.5rem" }}>Persona Name</label>
+              <input
+                ref={nameInputRef}
+                value={personaNameInput}
+                onChange={e => setPersonaNameInput(e.target.value)}
+                onKeyDown={e => e.key === "Enter" && handleNamingSave()}
+                placeholder="e.g. Sarandeep — Finance 2026"
+                style={{ width: "100%", padding: "0.75rem 1rem", border: "1px solid var(--primary)", borderRadius: 10, background: "var(--background)", color: "var(--on-surface)", fontFamily: "var(--font-sans)", fontSize: "0.95rem", outline: "none", boxSizing: "border-box", boxShadow: "0 0 0 3px rgba(21,69,57,0.1)" }}
+              />
+            </div>
+            <div style={{ display: "flex", gap: "0.75rem" }}>
+              <button onClick={() => setNamingModal(null)} style={{ flex: 1, padding: "0.75rem", borderRadius: 10, border: "1px solid var(--border-subtle)", background: "var(--surface-variant)", color: "var(--on-surface-variant)", fontFamily: "var(--font-sans)", fontWeight: 600, cursor: "pointer", fontSize: "0.9rem" }}>Skip</button>
+              <button onClick={handleNamingSave} disabled={namingSaving} style={{ flex: 2, padding: "0.75rem", borderRadius: 10, border: "none", background: "var(--primary)", color: "var(--on-primary)", fontFamily: "var(--font-sans)", fontWeight: 600, cursor: namingSaving ? "wait" : "pointer", fontSize: "0.9rem", display: "flex", alignItems: "center", justifyContent: "center", gap: "0.5rem" }}>
+                {namingSaving ? <span style={{ width: 16, height: 16, border: "2px solid rgba(255,255,255,0.3)", borderTopColor: "white", borderRadius: "50%", animation: "spin 0.7s linear infinite", display: "inline-block" }} /> : <span className="material-symbols-outlined" style={{ fontSize: 18 }}>save</span>}
+                Save Name
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
